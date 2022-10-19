@@ -1,7 +1,7 @@
 from typing import Optional
 
 import torch
-from local_attention import LocalAttention
+from .local_attention import LocalAttention
 
 
 # modeled after https://github.com/allenai/allennlp/blob/main/allennlp/modules/transformer/self_attention.py
