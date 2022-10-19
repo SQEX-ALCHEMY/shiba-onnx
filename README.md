@@ -1,3 +1,18 @@
+# SHIBA-ONNX
+SHIBA-ONNX is an ONNX-exported version of [SHIBA](https://github.com/octanove/shiba), a Japanese language version of CANINE[[1]](#1). 
+Originally, SHIBA cannot be exported to ONNX format due to unsupported onnx operations in the implementation.
+
+This fork replaces the original implementation along with its dependency with the onnx-supported torch functions.
+
+These includes...
+1. Taking [local_attention==0.4.1](https://github.com/lucidrains/local-attention) source code under `shiba/`. See [here](./shiba/local_attention/).
+2. Replacing plain python math operations with torch operations on tensor. See [here](./shiba/local_attention/local_attention.py).
+3. Changing matrix operations on boolean to float, and converting back. See [LocalAttention.forward()](./shiba/local_attention/local_attention.py).
+4. Removing `attention_mask` from `Shiba.forward()`'s argument. The masks are calculated inside the function.
+5. Implementing logic to handle short text input, converting the script to TorchScript. See [Shiba.forward.spacepad_to_min_length()](./shiba/model.py).
+
+See [export shiba to onnx.ipynb](./export%20shiba%20to%20onnx.ipynb) for the export steps.
+
 # What is SHIBA?
 
 SHIBA is an approximate reimplementation of CANINE[[1]](#1) in raw Pytorch, pretrained on the Japanese wikipedia corpus using random span masking. If you are unfamiliar with CANINE, you can think of it as a very efficient (approximately 4x as efficient) character-level BERT model. Of course, the name SHIBA comes from the identically named Japanese canine. 

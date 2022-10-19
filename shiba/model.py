@@ -134,16 +134,37 @@ class Shiba(torch.nn.Module):
         return torch.cat((repeated_molecules, last_molecule_repeated), dim=1)
 
     def forward(self, input_ids: torch.Tensor,
-                attention_mask: torch.Tensor,
                 predict_indices: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
-
+        """
         if input_ids.shape[1] > self.config.max_length:
             raise RuntimeError(f'Input tensor of shape {input_ids.shape} exceeded configured max length'
                                f'{self.config.max_length}')
 
         if any(input_ids[:, 0:1] != CodepointTokenizer.CLS):
             raise RuntimeError('All input sequences must start wit [CLS] codepoint')
-
+        """
+        @torch.jit.script
+        def spacepad_to_min_length(x, min_seq_len=4, padding_id=0):
+            space_codepoint = ord(" ")
+            batch_size = x.shape[0]
+            seq_len = x.shape[-1]
+            orig_shapes = torch.zeros(len(x.size()), dtype=torch.int64)
+            for i, s in enumerate(x.size()):
+                orig_shapes[i] += s
+            deficit = min_seq_len - seq_len
+            pads = torch.full((batch_size, max(0, deficit)), padding_id, dtype=torch.int64)
+            x_pad = torch.cat((x, pads), dim=1)
+            x_pad_min = x_pad[:, :min_seq_len]
+            # spacepad until reaching min_seq_len
+            x_pad[:, :min_seq_len] = torch.where(x_pad_min != padding_id, x_pad_min, space_codepoint)
+            return x_pad, orig_shapes
+        
+        # ensure that input is not less than 4.
+        # the model's minimum input size is 4 (equals to convolution kernel size).
+        # this pads the input with whitespace (codepoint=32) until sequence length is 4.
+        input_ids, orig_shape = spacepad_to_min_length(input_ids, padding_id=self.config.padding_id)
+        # create attention_mask on-the-fly
+        attention_mask = input_ids == 0
 
         # https://github.com/google-research/language/blob/186ce9002180d0c45bfa2a680085b890c76647dc/language/canine/modeling.py#L221
         # https://github.com/google-research/language/blob/13dc35ccad77309354ff8ed2950c560c16b083b1/language/canine/bert_modeling.py#L448
@@ -196,7 +217,7 @@ class Shiba(torch.nn.Module):
         upsampled_embeddings = self.activation(self.upsample_conv(concatenated.transpose(1, 2).contiguous()).
                                                transpose(1, 2))
         upsampled_embeddings = self.dropout(self.upsample_ln(upsampled_embeddings))  # h_up
-
+        
         if predict_indices is not None:
             # this is MLM of some kind - we don't need to do the final CLS computation and we can only do the
             # final transformer for the positions we're predicting
@@ -216,7 +237,9 @@ class Shiba(torch.nn.Module):
             final_embeddings = self.final_transformer(upsampled_embeddings[:, 1:, :].transpose(0, 1),
                                                       src_key_padding_mask=attention_mask[:, 1:]).transpose(0, 1)
             final_embeddings = torch.cat((final_cls, final_embeddings), dim=1)  # replace CLS embedding
-
+        
+        # before return, remove the whitespace pads in the beginning.
+        final_embeddings = final_embeddings[:, :orig_shape[-1], :]
         return {
             'embeddings': final_embeddings
         }
@@ -243,9 +266,16 @@ class Shiba(torch.nn.Module):
         d = convolution.dilation[0]
         k = convolution.kernel_size[0]
 
-        total_padding = l * s - l + d * k - d + 1 - s
-        lhs_padding = math.floor(total_padding / 2)
-        rhs_padding = math.ceil(total_padding / 2)
+        total_padding = torch.tensor(l * s - l + d * k - d + 1 - s)
+        # total_padding = torch.tensor(
+        #     hidden_state.shape[1] * convolution.stride[0] 
+        #     - hidden_state.shape[1] + convolution.dilation[0] * convolution.kernel_size[0] 
+        #     - convolution.dilation[0] + 1 - convolution.stride[0]
+        # ).detach()
+        # lhs_padding = math.floor(total_padding / 2)
+        # rhs_padding = math.ceil(total_padding / 2)
+        lhs_padding = torch.floor(total_padding / 2).type(torch.int64)
+        rhs_padding = torch.ceil(total_padding / 2).type(torch.int64)
 
         return torch.nn.functional.pad(hidden_state, (0, 0, lhs_padding, rhs_padding))
 
